@@ -1,0 +1,23 @@
+{
+  "name": "mcp-client-typescript",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc && chmod 755 build/index.js",
+    "chrome": "npm run build && node build/index.js mcp_server/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js",
+    "files": "npm run build && node build/index.js node_modules/@modelcontextprotocol/server-filesystem/dist/index.js /home/maximilian/Coding/mcp-client-typescript"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@modelcontextprotocol/server-filesystem": "^2026.1.14",
+    "dotenv": "^17.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.9.3"
+  }
+}
