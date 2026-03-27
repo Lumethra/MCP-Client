@@ -6,12 +6,27 @@ import readline from "readline/promises";
 const AI_API_URL = process.env.AI_API_URL ?? "https://ai.hackclub.com/proxy/v1/chat/completions";
 const AI_MODEL = process.env.AI_MODEL ?? process.env.OPENROUTER_MODEL ?? "openai/gpt-oss-120b";
 const MAX_TOOL_ROUNDS = 8;
+const DEFAULT_CONTEXT_THRESHOLD = 20;
 const SYSTEM_PROMPT = [
     "You are a local MCP assistant running on the user machine.",
     "Use MCP tools for browser tasks instead of speculating about unavailable environments.",
     "Do not claim you are in a cloud sandbox or cannot access localhost unless a tool explicitly reports that error.",
     "When a tool fails, explain the exact failure and suggest a concrete local fix.",
 ].join(" ");
+
+function parseContextThreshold(): number {
+    const raw = process.env.CONTEXT_THRESHOLD;
+    if (!raw) {
+        return DEFAULT_CONTEXT_THRESHOLD;
+    }
+
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isNaN(parsed)) {
+        return DEFAULT_CONTEXT_THRESHOLD;
+    }
+
+    return Math.max(0, parsed);
+}
 
 type OpenRouterTool = {
     type: "function";
@@ -61,9 +76,12 @@ class MCPClient {
     private mcp: Client;
     private transport: StdioClientTransport | null = null;
     private tools: OpenRouterTool[] = [];
+    private readonly contextThreshold: number;
+    private conversationTurns: OpenRouterMessage[][] = [];
 
     constructor() {
         this.mcp = new Client({ name: "mcp-client-cli", version: "1.0.0" });
+        this.contextThreshold = parseContextThreshold();
     }
 
     async connectToServer(serverScriptPath: string, serverArgs: string[] = []) {
@@ -196,11 +214,35 @@ class MCPClient {
         return "(tool returned no text content)";
     }
 
+    private buildMessagesForQuery(query: string): OpenRouterMessage[] {
+        const messages: OpenRouterMessage[] = [{ role: "system", content: SYSTEM_PROMPT }];
+
+        const historyToInclude = this.contextThreshold === 0
+            ? []
+            : this.conversationTurns.slice(-this.contextThreshold);
+
+        for (const turn of historyToInclude) {
+            messages.push(...turn);
+        }
+
+        messages.push({ role: "user", content: query });
+        return messages;
+    }
+
+    private trimConversationTurns() {
+        if (this.contextThreshold === 0) {
+            this.conversationTurns = [];
+            return;
+        }
+
+        if (this.conversationTurns.length > this.contextThreshold) {
+            this.conversationTurns = this.conversationTurns.slice(-this.contextThreshold);
+        }
+    }
+
     async processQuery(query: string) {
-        const messages: OpenRouterMessage[] = [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: query },
-        ];
+        const messages = this.buildMessagesForQuery(query);
+        const currentTurn: OpenRouterMessage[] = [{ role: "user", content: query }];
         const finalText: string[] = [];
 
         for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
@@ -223,6 +265,11 @@ class MCPClient {
                 content: assistantText,
                 ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
             });
+            currentTurn.push({
+                role: "assistant",
+                content: assistantText,
+                ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+            });
 
             if (toolCalls.length === 0) {
                 break;
@@ -241,8 +288,17 @@ class MCPClient {
                     name: toolCall.function.name,
                     content: this.toolResultToText(result),
                 });
+                currentTurn.push({
+                    role: "tool",
+                    tool_call_id: toolCall.id,
+                    name: toolCall.function.name,
+                    content: this.toolResultToText(result),
+                });
             }
         }
+
+        this.conversationTurns.push(currentTurn);
+        this.trimConversationTurns();
 
         return finalText.join("\n") || "(no text response)";
     }
@@ -256,6 +312,7 @@ class MCPClient {
         try {
             console.log("\nMCP Client Started!");
             console.log("Type your queries or 'quit' to exit.");
+            console.log(`Context threshold: ${this.contextThreshold} prompt(s)`);
 
             while (true) {
                 let message: string;
