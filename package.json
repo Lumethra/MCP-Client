@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "build": "tsc && chmod 755 build/index.js",
-    "chrome": "npm run build && node build/index.js mcp_server/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js",
+    "chrome": "npm run build && node build/index.js mcp_server/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js --isolated --chromeArg --no-sandbox --chromeArg --disable-setuid-sandbox --chromeArg --remote-allow-origins=*",
     "files": "npm run build && node build/index.js node_modules/@modelcontextprotocol/server-filesystem/dist/index.js /home/maximilian/Coding/mcp-client-typescript"
   },
   "keywords": [],
