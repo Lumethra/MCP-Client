@@ -12,10 +12,21 @@ const DEFAULT_CONTEXT_THRESHOLD = 20;
 const SYSTEM_PROMPT = [
     "You are a local MCP assistant running on the user machine.",
     "Use MCP tools for browser tasks instead of speculating about unavailable environments.",
-    "Use the built-in web_search tool for current web information. The time you are getting is in UTC.",
     "Do not claim you are in a cloud sandbox or cannot access localhost unless a tool explicitly reports that error.",
     "When a tool fails, explain the exact failure and suggest a concrete local fix.",
-].join(" ");
+];
+
+function isWebSearchEnabled(): boolean {
+    return (process.env.WEB_SEARCH_STATUS ?? "true").trim().toLowerCase() !== "false";
+}
+
+function parseSystemPrompt(): string {
+    const lines = [...SYSTEM_PROMPT];
+    if (isWebSearchEnabled()) {
+        lines.push("Use the built-in web_search tool for current web information. The time you are getting is in UTC.");
+    }
+    return lines.join(" ");
+}
 
 function parseContextThreshold(): number {
     const raw = process.env.CONTEXT_THRESHOLD;
@@ -88,6 +99,10 @@ class MCPClient {
     }
 
     private getBuiltInTools(): OpenRouterTool[] {
+        if (!isWebSearchEnabled()) {
+            return [];
+        }
+
         return [
             {
                 type: "function",
@@ -254,7 +269,7 @@ class MCPClient {
     }
 
     private buildMessagesForQuery(query: string): OpenRouterMessage[] {
-        const messages: OpenRouterMessage[] = [{ role: "system", content: SYSTEM_PROMPT }];
+        const messages: OpenRouterMessage[] = [{ role: "system", content: parseSystemPrompt() }];
         messages.push({ role: "system", content: `Current local date/time: ${new Date().toISOString()}` });
 
         const historyToInclude = this.contextThreshold === 0
