@@ -5,11 +5,14 @@ import readline from "readline/promises";
 
 const AI_API_URL = process.env.AI_API_URL ?? "https://ai.hackclub.com/proxy/v1/chat/completions";
 const AI_MODEL = process.env.AI_MODEL ?? process.env.OPENROUTER_MODEL ?? "openai/gpt-oss-120b";
+const SEARCH_API_URL = process.env.SEARCH_API_URL ?? "https://search.hackclub.com/res/v1/web/search";
+const WEB_SEARCH_TOOL_NAME = "web_search";
 const MAX_TOOL_ROUNDS = 8;
 const DEFAULT_CONTEXT_THRESHOLD = 20;
 const SYSTEM_PROMPT = [
     "You are a local MCP assistant running on the user machine.",
     "Use MCP tools for browser tasks instead of speculating about unavailable environments.",
+    "Use the built-in web_search tool for current web information. The time you are getting is in UTC.",
     "Do not claim you are in a cloud sandbox or cannot access localhost unless a tool explicitly reports that error.",
     "When a tool fails, explain the exact failure and suggest a concrete local fix.",
 ].join(" ");
@@ -84,6 +87,41 @@ class MCPClient {
         this.contextThreshold = parseContextThreshold();
     }
 
+    private getBuiltInTools(): OpenRouterTool[] {
+        return [
+            {
+                type: "function",
+                function: {
+                    name: WEB_SEARCH_TOOL_NAME,
+                    description: "Search the web for current information.",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            query: {
+                                type: "string",
+                            },
+                        },
+                        required: ["query"],
+                    },
+                },
+            },
+        ];
+    }
+
+    private async callBuiltInTool(args: Record<string, unknown>) {
+        const query = String(args.query ?? "").trim();
+        const response = await fetch(`${SEARCH_API_URL}?q=${encodeURIComponent(query)}&count=5`, {
+            method: "GET",
+            headers: {
+                Authorization: `Bearer ${process.env.HACK_CLUB_SEARCH_API_KEY ?? ""}`,
+            },
+        });
+
+        return {
+            toolResult: await response.json(),
+        };
+    }
+
     async connectToServer(serverScriptPath: string, serverArgs: string[] = []) {
         try {
             const isJs = serverScriptPath.endsWith(".js");
@@ -110,6 +148,7 @@ class MCPClient {
                     },
                 },
             }));
+            this.tools.push(...this.getBuiltInTools());
             console.log("Connected to server with tools:", this.tools.map((tool) => tool.function.name));
         } catch (e) {
             console.log("Failed to connect to MCP server: ", e);
@@ -216,6 +255,7 @@ class MCPClient {
 
     private buildMessagesForQuery(query: string): OpenRouterMessage[] {
         const messages: OpenRouterMessage[] = [{ role: "system", content: SYSTEM_PROMPT }];
+        messages.push({ role: "system", content: `Current local date/time: ${new Date().toISOString()}` });
 
         const historyToInclude = this.contextThreshold === 0
             ? []
@@ -277,10 +317,12 @@ class MCPClient {
 
             for (const toolCall of toolCalls) {
                 const args = this.parseToolArguments(toolCall.function.arguments);
-                const result = await this.mcp.callTool({
-                    name: toolCall.function.name,
-                    arguments: args,
-                });
+                const result = toolCall.function.name === WEB_SEARCH_TOOL_NAME
+                    ? await this.callBuiltInTool(args)
+                    : await this.mcp.callTool({
+                        name: toolCall.function.name,
+                        arguments: args,
+                    });
 
                 messages.push({
                     role: "tool",
