@@ -6,13 +6,10 @@ import readline from "readline/promises";
 const AI_API_URL = process.env.AI_API_URL ?? "https://ai.hackclub.com/proxy/v1/chat/completions";
 const AI_MODEL = process.env.AI_MODEL ?? process.env.OPENROUTER_MODEL ?? "openai/gpt-oss-120b";
 const MAX_TOOL_ROUNDS = 8;
-const DEFAULT_CONTEXT_THRESHOLD = 10;
-const SEARCH_API_BASE_URL = process.env.SEARCH_API_URL ?? "https://search.hackclub.com/res/v1";
-const DEFAULT_SEARCH_COUNT = 10;
+const DEFAULT_CONTEXT_THRESHOLD = 20;
 const SYSTEM_PROMPT = [
     "You are a local MCP assistant running on the user machine.",
     "Use MCP tools for browser tasks instead of speculating about unavailable environments.",
-    "Use provided web context when present.",
     "Do not claim you are in a cloud sandbox or cannot access localhost unless a tool explicitly reports that error.",
     "When a tool fails, explain the exact failure and suggest a concrete local fix.",
 ].join(" ");
@@ -29,20 +26,6 @@ function parseContextThreshold(): number {
     }
 
     return Math.max(0, parsed);
-}
-
-function parseSearchCount(): number {
-    const raw = process.env.SEARCH_COUNT;
-    if (!raw) {
-        return DEFAULT_SEARCH_COUNT;
-    }
-
-    const parsed = Number.parseInt(raw, 10);
-    if (Number.isNaN(parsed)) {
-        return DEFAULT_SEARCH_COUNT;
-    }
-
-    return Math.max(1, Math.min(10, parsed));
 }
 
 type OpenRouterTool = {
@@ -94,17 +77,11 @@ class MCPClient {
     private transport: StdioClientTransport | null = null;
     private tools: OpenRouterTool[] = [];
     private readonly contextThreshold: number;
-    private readonly searchCount: number;
     private conversationTurns: OpenRouterMessage[][] = [];
 
     constructor() {
         this.mcp = new Client({ name: "mcp-client-cli", version: "1.0.0" });
         this.contextThreshold = parseContextThreshold();
-        this.searchCount = parseSearchCount();
-    }
-
-    private getSearchApiKey(): string | undefined {
-        return process.env.SEARCH_API_KEY ?? process.env.HACK_CLUB_SEARCH_API_KEY;
     }
 
     async connectToServer(serverScriptPath: string, serverArgs: string[] = []) {
@@ -237,52 +214,6 @@ class MCPClient {
         return "(tool returned no text content)";
     }
 
-    private async getWebContext(query: string): Promise<string> {
-        const apiKey = this.getSearchApiKey();
-        if (!apiKey) {
-            return "NO API KEY, get ur ass to get one";
-        }
-
-        const url = `${SEARCH_API_BASE_URL}/web/search?q=${encodeURIComponent(query)}&count=${this.searchCount}`;
-        const response = await fetch(url, {
-            headers: {
-                Authorization: `Bearer ${apiKey}`,
-            },
-        });
-
-        if (!response.ok) {
-            return "AHHHHHHHHHHH";
-        }
-
-        const payload = await response.json() as {
-            web?: {
-                results?: Array<{
-                    title?: string;
-                    url?: string;
-                    description?: string;
-                    snippet?: string;
-                }>;
-            };
-        };
-
-        const results = payload.web?.results ?? [];
-        if (results.length === 0) {
-            return "Nothing, cry about it";
-        }
-
-        const formattedResults = results
-            .slice(0, 5)
-            .map((item, index) => {
-                const title = item.title ?? "(untitled)";
-                const link = item.url ?? "";
-                const summary = item.description ?? item.snippet ?? "";
-                return `${index + 1}. ${title}\nURL: ${link}${summary ? `\nSummary: ${summary}` : ""}`;
-            })
-            .join("\n\n");
-
-        return `Web search results:\n${formattedResults}\n\nQuestion:\n${query}`;
-    }
-
     private buildMessagesForQuery(query: string): OpenRouterMessage[] {
         const messages: OpenRouterMessage[] = [{ role: "system", content: SYSTEM_PROMPT }];
 
@@ -310,10 +241,8 @@ class MCPClient {
     }
 
     async processQuery(query: string) {
-        const queryWithContext = await this.getWebContext(query);
-        const userMessage = queryWithContext || query;
-        const messages = this.buildMessagesForQuery(userMessage);
-        const currentTurn: OpenRouterMessage[] = [{ role: "user", content: userMessage }];
+        const messages = this.buildMessagesForQuery(query);
+        const currentTurn: OpenRouterMessage[] = [{ role: "user", content: query }];
         const finalText: string[] = [];
 
         for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
@@ -352,19 +281,18 @@ class MCPClient {
                     name: toolCall.function.name,
                     arguments: args,
                 });
-                const toolOutput = this.toolResultToText(result);
 
                 messages.push({
                     role: "tool",
                     tool_call_id: toolCall.id,
                     name: toolCall.function.name,
-                    content: toolOutput,
+                    content: this.toolResultToText(result),
                 });
                 currentTurn.push({
                     role: "tool",
                     tool_call_id: toolCall.id,
                     name: toolCall.function.name,
-                    content: toolOutput,
+                    content: this.toolResultToText(result),
                 });
             }
         }
